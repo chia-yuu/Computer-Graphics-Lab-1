@@ -295,10 +295,10 @@ int main() {
 			// Vector ray_direction(0., 0., -1);
             double aspect_ratio = W / (double)H;
 			double fov_rad = scene.fov;
-			double tan_fov = tan(fov_rad / 2.0);
-			double d = 1.0 / tan_fov;  // Screen distance
-			double x = (2.0 * (j + 0.5) / W - 1.0) * tan_fov * aspect_ratio;
-			double y = (1.0 - 2.0 * (i + 0.5) / H) * tan_fov;
+			double tan_fov = scene.fov;
+			double d = W / (2. * std::tan(scene.fov / 2.));
+			double x = j + 0.5 - W / 2;
+			double y = (H - i - 1) + 0.5 - H / 2.;
 			Vector ray_direction(x, y, -d);
 			ray_direction.normalize();
 
