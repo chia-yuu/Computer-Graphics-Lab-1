@@ -150,25 +150,26 @@ public:
 		// and keep the closest intersection, i.e., the one if smallest positive value of t
 
         bool hit = false;
-        double t_min = 1e30;
-        Vector P_tmp, N_tmp;
-        double t_tmp;
-        int id = -1;
+        double t_mn = 1e30;
+        Vector PP, NN;
+        double tt;
+        int id;
 
+        // iterate through all obj to find the closest obj
         for (int i = 0; i < (int)objects.size(); i++) {
-            if (objects[i]->intersect(ray, P_tmp, t_tmp, N_tmp)) {
-                if (t_tmp > 1e-6 && t_tmp < t_min) {
+            if (objects[i]->intersect(ray, PP, tt, NN)) {
+                if (tt > 1e-6 && tt < t_mn) {
                     hit = true;
-                    t_min = t_tmp;
+                    t_mn = tt;
                     id = i;
-                    P = P_tmp;
-                    N = N_tmp;
+                    P = PP;
+                    N = NN;
                 }
             }
         }
 
         if (hit) {
-            t = t_min;
+            t = t_mn;
             object_id = id;
             N.normalize();
             return true;
@@ -205,13 +206,12 @@ public:
 
 			// test if there is a shadow by sending a new ray
 			// if there is no shadow, compute the formula with dot products etc.
+            
             Vector l = this->light_position - P;
             double dist2 = dot(l, l);
             double dist = sqrt(dist2);
-            l = l / dist;
-
+            l = l / dist;   // normalize
             Ray shadow_ray(P + N * 1e-6, l);
-            // Shadow test: check if any object (except current) intersects shadow ray before light
             bool is_shadow = false;
             for (int k = 0; k < (int)objects.size(); k++) {
                 if (k == object_id) continue;
@@ -268,8 +268,11 @@ int main() {
 	Scene scene;
 	scene.camera_center = Vector(0, 0, 55);
 	scene.light_position = Vector(-10,20,40);
+	// scene.light_intensity = 2E6;
+	// scene.light_intensity = 1E5;
 	scene.light_intensity = 3E7;
 	scene.fov = 60 * M_PI / 180.;
+	// scene.gamma = 1.0;    // TODO (lab 1) : play with gamma ; typically, gamma = 2.2
 	scene.gamma = 2.2;    // TODO (lab 1) : play with gamma ; typically, gamma = 2.2
 	scene.max_light_bounce = 5;
 
