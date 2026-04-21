@@ -2,6 +2,7 @@
 #include <vector>
 #include <cmath>
 #include <random>
+#include <omp.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -62,6 +63,9 @@ double dot(const Vector& a, const Vector& b) {
 }
 Vector cross(const Vector& a, const Vector& b) {
 	return Vector(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]);
+}
+Vector operator*(const Vector& a, const Vector& b) {
+	return Vector(a[0] * b[0], a[1] * b[1], a[2] * b[2]);
 }
 
 class Ray {
@@ -230,10 +234,35 @@ public:
             double n_dot_l = std::max(0.0, dot(N, l));
             double irr = light_intensity / (4.0 * M_PI * dist2);
             Vector color = (objects[object_id]->albedo / M_PI) * irr * std::max(0.0, dot(N, l));
-            return color;
-
-
+			
 			// TODO (lab 2) : add indirect lighting component with a recursive call
+			// image_lab2_1 : indirect sample = 1 , num_sample = 16
+			// image_lab2_2 : indirect sample = 5 , num_sample = 16
+			Vector indirect_light(0, 0, 0);
+			int n_indirect_samples = 1;
+			int thread_id = omp_get_thread_num();
+			for (int i = 0; i < n_indirect_samples; i++) {
+				Vector up = fabs(N[1]) < 0.99 ? Vector(0,1,0) : Vector(1,0,0);
+				Vector tangent = cross(up, N); tangent.normalize();
+				Vector bitangent = cross(N, tangent); bitangent.normalize();
+				// double u1 = uniform(engine[0]);
+				double u1 = uniform(engine[thread_id]);
+				// double u2 = uniform(engine[0]);
+				double u2 = uniform(engine[thread_id]);
+				double r = sqrt(u1);
+				double theta = 2.0 * M_PI * u2;
+				double x = r * cos(theta);
+				double y = r * sin(theta);
+				double z = sqrt(1.0 - u1);
+				Vector dir = x * tangent + y * bitangent + z * N;
+				dir.normalize();
+				Ray indirect_ray(P + N * 1e-6, dir);
+				Vector indirect_color = getColor(indirect_ray, recursion_depth + 1);
+				Vector tmp = (objects[object_id]->albedo / M_PI);
+				indirect_light = indirect_light + Vector(tmp[0] * indirect_color[0], tmp[1] * indirect_color[1], tmp[2] * indirect_color[2]);
+			}
+			indirect_light = indirect_light / n_indirect_samples;
+			return color + indirect_light;
 		}
 
 		
@@ -257,7 +286,7 @@ int main() {
 		engine[i].seed(i);
 	}
 
-	Sphere center_sphere(Vector(0, 0, 0), 10., Vector(0.8, 0.8, 0.8));
+	Sphere center_sphere(Vector(0, 0, 0), 10., Vector(0.8, 0.8, 0.8), true);
 	Sphere wall_left(Vector(-1000, 0, 0), 940, Vector(0.5, 0.8, 0.1));
 	Sphere wall_right(Vector(1000, 0, 0), 940, Vector(0.9, 0.2, 0.3));
 	Sphere wall_front(Vector(0, 0, -1000), 940, Vector(0.1, 0.6, 0.7));
@@ -307,18 +336,43 @@ int main() {
 
 			Ray ray(scene.camera_center, ray_direction);
 
-			// TODO (lab 2) : add Monte Carlo / averaging of random ray contributions here
-			// TODO (lab 2) : add antialiasing by altering the ray_direction here
-			// TODO (lab 2) : add depth of field effect by altering the ray origin (and direction) here
-
-			color  = scene.getColor(ray, 0);
+            // TODO (lab 2) : add Monte Carlo / averaging of random ray contributions here
+            // TODO (lab 2) : add antialiasing by altering the ray_direction here
+            // TODO (lab 2) : add depth of field effect by altering the ray origin (and direction) here
+            
+            int n_samples = 16;
+            color = Vector(0, 0, 0);
+			int thread_id = omp_get_thread_num();
+            
+            for (int s = 0; s < n_samples; s++) {
+				double jitter_x = uniform(engine[thread_id]) - 0.5;
+				double jitter_y = uniform(engine[thread_id]) - 0.5;
+                
+                double jittered_x = j + 0.5 + jitter_x - W / 2;
+                double jittered_y = (H - i - 1) + 0.5 + jitter_y - H / 2.0;
+                
+                Vector jittered_ray_direction(jittered_x, jittered_y, -d);
+                jittered_ray_direction.normalize();
+                
+                Ray jittered_ray(scene.camera_center, jittered_ray_direction);
+                color = color + scene.getColor(jittered_ray, 0);
+            }
+            
+            // color avg
+            color = color / n_samples;
 
 			image[(i * W + j) * 3 + 0] = std::min(255., std::max(0., 255. * std::pow(color[0] / 255., 1. / scene.gamma)));
 			image[(i * W + j) * 3 + 1] = std::min(255., std::max(0., 255. * std::pow(color[1] / 255., 1. / scene.gamma)));
 			image[(i * W + j) * 3 + 2] = std::min(255., std::max(0., 255. * std::pow(color[2] / 255., 1. / scene.gamma)));
 		}
 	}
-	stbi_write_png("image.png", W, H, 3, &image[0], 0);
+	stbi_write_png("lab2.png", W, H, 3, &image[0], 0);
 
 	return 0;
 }
+
+// g++ -O3 main.cpp -o raytracer.exe
+// g++ -O3 -fopenmp main.cpp -o raytracer
+// git fetch upstream
+// git merge upstream/master
+// git push origin main
