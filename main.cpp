@@ -280,8 +280,106 @@ public:
 		// lab 3 : once done, speed it up by first checking against the mesh bounding box
 		// lab 4 : recursively apply the bounding-box test from a BVH datastructure
 
+		// find bonding box
+		Vector bound_mn, bound_mx;
+		if(vertices.empty()){
+			bound_mn = Vector(0, 0, 0);
+			bound_mx = Vector(0, 0, 0);
+		}
+		bound_mn = vertices[0];
+		bound_mx = vertices[0];
+		for(auto v:vertices){
+			for(int i=0;i<3;i++){
+				bound_mn[i] = std::min(bound_mn[i], v[i]);
+				bound_mx[i] = std::max(bound_mx[i], v[i]);
+			}
+		}
 
-		return false;
+		// check if the ray intersect with the bounding box
+		bool intersect_bx = true;
+		double mn = -1e30, mx = 1e30;
+		for(int i=0;i<3;i++){
+			if(std::abs(ray.u[0]) < 1e-6){
+				// ray parall to the plan
+				if(ray.O[i] < bound_mn[i] || ray.O[i] > bound_mx[i]){
+					intersect_bx = false;
+					break;
+				}
+			}
+			else{
+				// B - O / u
+				double t0 = (bound_mn[i] - ray.O[i]) / ray.u[i];
+				double t1 = (bound_mx[i] - ray.O[i]) / ray.u[i];
+				if(t0 > t1){std::swap(t0, t1);}
+				mn = std::max(mn, t0);
+				mx = std::min(mx, t1);
+				if(mn > mx){
+					intersect_bx = false;
+					break;
+				}
+			}
+		}
+		
+		if(!intersect_bx){return false;}
+
+
+		// Moller-Trumbore, iterate through all vertex index to check if the ray intersect with the traingle
+		bool intersect_tri = false;
+		Vector PP, NN;
+		double t_mn = 1e30;
+		for(auto idx : indices){
+			Vector P_i, N_i;
+			double t_i;
+
+			Vector A = vertices[idx.vtx[0]];
+			Vector B = vertices[idx.vtx[1]];
+			Vector C = vertices[idx.vtx[2]];
+			Vector e1 = B - A;
+			Vector e2 = C - A;
+
+			Vector h = cross(ray.u, e2);
+			double a = dot(e1, h);
+			if(std::abs(a) < 1e-6){continue;}
+
+			double f = 1.0 / a;
+			Vector s = ray.O - A;
+			double u = f * dot(s, h);
+			if(u < 0.0 || u > 1.0){continue;}
+
+			Vector q = cross(s, e1);
+			double v = f * dot(ray.u, q);
+			if(v < 0.0 || u + v > 1.0){continue;}
+
+			t_i = f * dot(e2, q);
+			if(t_i < 1e-6){continue;}
+
+			P_i = ray.O + ray.u * t_i;
+
+			if(idx.n[0] != -1 && idx.n[1] != -1 && idx.n[2] != -1){
+				double w = 1.0 - u - v;
+				N_i = w * normals[idx.n[0]] + u * normals[idx.n[1]] + v * normals[idx.n[2]];
+			}
+			else{
+				N_i = cross(e1, e2);
+			}
+			N_i.normalize();
+
+			if(t_i < t_mn){
+				intersect_tri = true;
+				t_mn = t_i;
+				PP = P_i;
+				NN = N_i;
+			}
+		}
+
+		if(intersect_tri){
+			P = PP;
+			N = NN;
+			N.normalize();
+			t = t_mn;
+		}
+
+		return intersect_tri;
 	}
 
 
@@ -409,7 +507,7 @@ public:
 			Ray indirect_ray(P + N * 1e-6, dir);
 			Vector indirect_color = getColor(indirect_ray, recursion_depth + 1);
 			// Vector albedo = objects[object_id]->albedo;
-			indirect_light = indirect_light + objects[object_id]->albedo * indirect_color;
+			indirect_light = indirect_light + (objects[object_id]->albedo / M_PI) * indirect_color;
 			return color + indirect_light;
 		}
 
@@ -455,9 +553,14 @@ int main() {
 	scene.gamma = 2.2;    // TODO (lab 1) : play with gamma ; typically, gamma = 2.2
 	scene.max_light_bounce = 5;
 
-	scene.addObject(&center_sphere);
+	// scene.addObject(&center_sphere);
 	// scene.addObject(&front_sphere);
 	// scene.addObject(&back_sphere);
+
+	TriangleMesh* cat = new TriangleMesh(Vector(0.8, 0.8, 0.8), false, false);
+	cat->readOBJ("cadnav.com_model/Models_F0202A090/cat.obj");
+	cat->scale_translate(0.6, Vector(0, -10, 0));
+	scene.addObject(cat);
 
 	// /*
 	scene.addObject(&wall_left);
@@ -536,7 +639,8 @@ int main() {
 			image[(i * W + j) * 3 + 2] = std::min(255., std::max(0., 255. * std::pow(color[2] / 255., 1. / scene.gamma)));
 		}
 	}
-	stbi_write_png("lab2.png", W, H, 3, &image[0], 0);
+	stbi_write_png("lab3.png", W, H, 3, &image[0], 0);
+	delete cat;
 
 	return 0;
 }
