@@ -3,6 +3,9 @@
 #include <cmath>
 #include <random>
 #include <omp.h>
+#include <map>
+#include <string>
+#include <fstream>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -124,15 +127,169 @@ public:
 };
 
 
-// I will provide you with an obj mesh loader (labs 3 and 4)
+// Class only used in labs 3 and 4 
+class TriangleIndices {
+public:
+	TriangleIndices(int vtxi = -1, int vtxj = -1, int vtxk = -1, int ni = -1, int nj = -1, int nk = -1, int uvi = -1, int uvj = -1, int uvk = -1, int group = -1) {
+		vtx[0] = vtxi; vtx[1] = vtxj; vtx[2] = vtxk;
+		uv[0] = uvi; uv[1] = uvj; uv[2] = uvk;
+		n[0] = ni; n[1] = nj; n[2] = nk;
+		this->group = group;
+	};
+	int vtx[3]; // indices within the vertex coordinates array
+	int uv[3];  // indices within the uv coordinates array
+	int n[3];   // indices within the normals array
+	int group;  // face group
+};
+
+// Class only used in labs 3 and 4 
 class TriangleMesh : public Object {
 public:
 	TriangleMesh(const Vector& albedo, bool mirror = false, bool transparent = false) : ::Object(albedo, mirror, transparent) {};
 
+	// first scale and then translate the current object
+	void scale_translate(double s, const Vector& t) {
+		for (int i = 0; i < vertices.size(); i++) {
+			vertices[i] = vertices[i] * s + t;
+		}
+	}
+
+	// read an .obj file
+	void readOBJ(const char* obj) {
+		std::ifstream f(obj);
+		if (!f) return;
+
+		std::map<std::string, int> mtls;
+		int curGroup = -1, maxGroup = -1;
+
+		// OBJ indices are 1-based and can be negative (relative), this normalizes them
+		auto resolveIdx = [](int i, int size) {
+			return i < 0 ? size + i : i - 1;
+		};
+
+		auto setFaceVerts = [&](TriangleIndices& t, int i0, int i1, int i2) {
+			t.vtx[0] = resolveIdx(i0, vertices.size());
+			t.vtx[1] = resolveIdx(i1, vertices.size());
+			t.vtx[2] = resolveIdx(i2, vertices.size());
+		};
+		auto setFaceUVs = [&](TriangleIndices& t, int j0, int j1, int j2) {
+			t.uv[0] = resolveIdx(j0, uvs.size());
+			t.uv[1] = resolveIdx(j1, uvs.size());
+			t.uv[2] = resolveIdx(j2, uvs.size());
+		};
+		auto setFaceNormals = [&](TriangleIndices& t, int k0, int k1, int k2) {
+			t.n[0] = resolveIdx(k0, normals.size());
+			t.n[1] = resolveIdx(k1, normals.size());
+			t.n[2] = resolveIdx(k2, normals.size());
+		};
+
+		std::string line;
+		while (std::getline(f, line)) {
+			// Trim trailing whitespace
+			line.erase(line.find_last_not_of(" \r\t\n") + 1);
+			if (line.empty()) continue;
+
+			const char* s = line.c_str();
+
+			if (line.rfind("usemtl ", 0) == 0) {
+				std::string matname = line.substr(7);
+				auto result = mtls.emplace(matname, maxGroup + 1);
+				if (result.second) {
+					curGroup = ++maxGroup;
+				} else {
+					curGroup = result.first->second;
+				}
+			} else if (line.rfind("vn ", 0) == 0) {
+				Vector v;
+				sscanf(s, "vn %lf %lf %lf", &v[0], &v[1], &v[2]);
+				normals.push_back(v);
+			} else if (line.rfind("vt ", 0) == 0) {
+				Vector v;
+				sscanf(s, "vt %lf %lf", &v[0], &v[1]);
+				uvs.push_back(v);
+			} else if (line.rfind("v ", 0) == 0) {
+				Vector pos, col;
+				if (sscanf(s, "v %lf %lf %lf %lf %lf %lf", &pos[0], &pos[1], &pos[2], &col[0], &col[1], &col[2]) == 6) {
+					for (int i = 0; i < 3; i++) col[i] = std::min(1.0, std::max(0.0, col[i]));
+					vertexcolors.push_back(col);
+				} else {
+					sscanf(s, "v %lf %lf %lf", &pos[0], &pos[1], &pos[2]);
+				}
+				vertices.push_back(pos);
+			}
+			else if (line[0] == 'f') {
+				int i[4], j[4], k[4], offset, nn;
+				const char* cur = s + 1;
+				TriangleIndices t;
+				t.group = curGroup;
+
+				// Try each face format: v/vt/vn, v/vt, v//vn, v
+				if ((nn = sscanf(cur, "%d/%d/%d %d/%d/%d %d/%d/%d%n", &i[0], &j[0], &k[0], &i[1], &j[1], &k[1], &i[2], &j[2], &k[2], &offset)) == 9) {
+					setFaceVerts(t, i[0], i[1], i[2]); 
+					setFaceUVs(t, j[0], j[1], j[2]); 
+					setFaceNormals(t, k[0], k[1], k[2]);
+				} else if ((nn = sscanf(cur, "%d/%d %d/%d %d/%d%n", &i[0], &j[0], &i[1], &j[1], &i[2], &j[2], &offset)) == 6) {
+					setFaceVerts(t, i[0], i[1], i[2]); 
+					setFaceUVs(t, j[0], j[1], j[2]);
+				} else if ((nn = sscanf(cur, "%d//%d %d//%d %d//%d%n", &i[0], &k[0], &i[1], &k[1], &i[2], &k[2], &offset)) == 6) {
+					setFaceVerts(t, i[0], i[1], i[2]); 
+					setFaceNormals(t, k[0], k[1], k[2]);
+				} else if ((nn = sscanf(cur, "%d %d %d%n", &i[0], &i[1], &i[2], &offset)) == 3) {
+					setFaceVerts(t, i[0], i[1], i[2]);
+				}
+				else continue;
+
+				indices.push_back(t);
+				cur += offset;
+
+				// Fan triangulation for polygon faces (4+ vertices)
+				while (*cur && *cur != '\n') {
+					TriangleIndices t2;
+					t2.group = curGroup;
+					if ((nn = sscanf(cur, " %d/%d/%d%n", &i[3], &j[3], &k[3], &offset)) == 3) {
+						setFaceVerts(t2, i[0], i[2], i[3]); 
+						setFaceUVs(t2, j[0], j[2], j[3]); 
+						setFaceNormals(t2, k[0], k[2], k[3]);
+					} else if ((nn = sscanf(cur, " %d/%d%n", &i[3], &j[3], &offset)) == 2) {
+						setFaceVerts(t2, i[0], i[2], i[3]); 
+						setFaceUVs(t2, j[0], j[2], j[3]);
+					} else if ((nn = sscanf(cur, " %d//%d%n", &i[3], &k[3], &offset)) == 2) {
+						setFaceVerts(t2, i[0], i[2], i[3]); 
+						setFaceNormals(t2, k[0], k[2], k[3]);
+					} else if ((nn = sscanf(cur, " %d%n", &i[3], &offset)) == 1) {
+						setFaceVerts(t2, i[0], i[2], i[3]);
+					} else { 
+						cur++; 
+						continue; 
+					}
+
+					indices.push_back(t2);
+					cur += offset;
+					i[2] = i[3]; j[2] = j[3]; k[2] = k[3];
+				}
+			}
+		}
+	}
+	
+
+	// TODO ray-mesh intersection (labs 3 and 4)
 	bool intersect(const Ray& ray, Vector& P, double& t, Vector& N) const {
 		// TODO (labs 3 and 4)
+		
+		// lab 3 : for each triangle, compute the ray-triangle intersection with Moller-Trumbore algorithm
+		// lab 3 : once done, speed it up by first checking against the mesh bounding box
+		// lab 4 : recursively apply the bounding-box test from a BVH datastructure
+
+
 		return false;
 	}
+
+
+	std::vector<TriangleIndices> indices;
+	std::vector<Vector> vertices;
+	std::vector<Vector> normals;
+	std::vector<Vector> uvs;
+	std::vector<Vector> vertexcolors;
 };
 
 
@@ -229,39 +386,30 @@ public:
                 }
             }
 
-            if(is_shadow){return Vector(0, 0, 0);}
+            // if(is_shadow){return Vector(0, 0, 0);}
 
             double n_dot_l = std::max(0.0, dot(N, l));
             double irr = light_intensity / (4.0 * M_PI * dist2);
-            Vector color = (objects[object_id]->albedo / M_PI) * irr * std::max(0.0, dot(N, l));
+            Vector color = is_shadow? Vector(0, 0, 0) : (objects[object_id]->albedo / M_PI) * irr * std::max(0.0, dot(N, l));
 			
 			// TODO (lab 2) : add indirect lighting component with a recursive call
-			// image_lab2_1 : indirect sample = 1 , num_sample = 16
-			// image_lab2_2 : indirect sample = 5 , num_sample = 16
 			Vector indirect_light(0, 0, 0);
-			int n_indirect_samples = 1;
 			int thread_id = omp_get_thread_num();
-			for (int i = 0; i < n_indirect_samples; i++) {
-				Vector up = fabs(N[1]) < 0.99 ? Vector(0,1,0) : Vector(1,0,0);
-				Vector tangent = cross(up, N); tangent.normalize();
-				Vector bitangent = cross(N, tangent); bitangent.normalize();
-				// double u1 = uniform(engine[0]);
-				double u1 = uniform(engine[thread_id]);
-				// double u2 = uniform(engine[0]);
-				double u2 = uniform(engine[thread_id]);
-				double r = sqrt(u1);
-				double theta = 2.0 * M_PI * u2;
-				double x = r * cos(theta);
-				double y = r * sin(theta);
-				double z = sqrt(1.0 - u1);
-				Vector dir = x * tangent + y * bitangent + z * N;
-				dir.normalize();
-				Ray indirect_ray(P + N * 1e-6, dir);
-				Vector indirect_color = getColor(indirect_ray, recursion_depth + 1);
-				Vector tmp = (objects[object_id]->albedo / M_PI);
-				indirect_light = indirect_light + Vector(tmp[0] * indirect_color[0], tmp[1] * indirect_color[1], tmp[2] * indirect_color[2]);
-			}
-			indirect_light = indirect_light / n_indirect_samples;
+
+			double r1 = uniform(engine[thread_id]);
+			double r2 = uniform(engine[thread_id]);
+			double x = cos(2 * M_PI * r1) * sqrt(1 - r2);
+			double y = sin(2 * M_PI * r1) * sqrt(1 - r2);
+			double z = sqrt(r2);
+			Vector t1 = Vector(-N[1], N[0], 0);
+			t1.normalize();
+			Vector t2 = cross(N, t1);
+			Vector dir = x*t1 + y*t2 + z*N;
+			dir.normalize();
+			Ray indirect_ray(P + N * 1e-6, dir);
+			Vector indirect_color = getColor(indirect_ray, recursion_depth + 1);
+			// Vector albedo = objects[object_id]->albedo;
+			indirect_light = indirect_light + objects[object_id]->albedo * indirect_color;
 			return color + indirect_light;
 		}
 
@@ -287,6 +435,8 @@ int main() {
 	}
 
 	Sphere center_sphere(Vector(0, 0, 0), 10., Vector(0.8, 0.8, 0.8), true);
+	Sphere front_sphere(Vector(-15, -3, 20), 6., Vector(0.8, 0.8, 0.8), false);
+	Sphere back_sphere(Vector(25, -2, -15), 8., Vector(0.8, 0.8, 0.8), true);
 	Sphere wall_left(Vector(-1000, 0, 0), 940, Vector(0.5, 0.8, 0.1));
 	Sphere wall_right(Vector(1000, 0, 0), 940, Vector(0.9, 0.2, 0.3));
 	Sphere wall_front(Vector(0, 0, -1000), 940, Vector(0.1, 0.6, 0.7));
@@ -306,6 +456,8 @@ int main() {
 	scene.max_light_bounce = 5;
 
 	scene.addObject(&center_sphere);
+	// scene.addObject(&front_sphere);
+	// scene.addObject(&back_sphere);
 
 	// /*
 	scene.addObject(&wall_left);
@@ -340,25 +492,43 @@ int main() {
             // TODO (lab 2) : add antialiasing by altering the ray_direction here
             // TODO (lab 2) : add depth of field effect by altering the ray origin (and direction) here
             
-            int n_samples = 16;
+            int n_samples = 64;
             color = Vector(0, 0, 0);
 			int thread_id = omp_get_thread_num();
             
             for (int s = 0; s < n_samples; s++) {
-				double jitter_x = uniform(engine[thread_id]) - 0.5;
-				double jitter_y = uniform(engine[thread_id]) - 0.5;
-                
-                double jittered_x = j + 0.5 + jitter_x - W / 2;
-                double jittered_y = (H - i - 1) + 0.5 + jitter_y - H / 2.0;
-                
-                Vector jittered_ray_direction(jittered_x, jittered_y, -d);
-                jittered_ray_direction.normalize();
-                
-                Ray jittered_ray(scene.camera_center, jittered_ray_direction);
-                color = color + scene.getColor(jittered_ray, 0);
+				// antialiasing by altering the ray_direction
+				double mu_x = j + 0.5 - W / 2.0;
+				double mu_y = (H - i - 1) + 0.5 - H / 2.0;
+				// double r1 = uniform(engine[0]);
+				// double r2 = uniform(engine[0]);
+				double r1 = uniform(engine[thread_id]);
+				double r2 = uniform(engine[thread_id]);
+				double sigma = 0.5;
+				double xx = sigma * sqrt(-2.0 * log(r1)) * cos(2*M_PI*r1);
+				double yy = sigma * sqrt(-2.0 * log(r1)) * sin(2*M_PI*r1);
+
+				Vector ray_dir(mu_x + xx, mu_y + yy, -d);
+				ray_dir.normalize();
+
+                // color = color + scene.getColor(Ray(scene.camera_center, ray_dir), 0);		// color without depth of field
+
+				// depth of field
+				double focal_dist = 55.0;
+				double aperture = 1.5;
+				Vector focus_point = scene.camera_center + ray_dir * (focal_dist / fabs(ray_dir[2]));
+
+				double r_ap = aperture * sqrt(r1);
+				double theta_ap = 2.0 * M_PI * r2;
+				Vector origin_dof = scene.camera_center + Vector(r_ap * cos(theta_ap), r_ap * sin(theta_ap), 0.0);
+
+				Vector dir_dof = focus_point - origin_dof;
+				dir_dof.normalize();
+
+				color = color + scene.getColor(Ray(origin_dof, dir_dof), 0);
             }
             
-            // color avg
+            // averaging of random ray
             color = color / n_samples;
 
 			image[(i * W + j) * 3 + 0] = std::min(255., std::max(0., 255. * std::pow(color[0] / 255., 1. / scene.gamma)));
@@ -371,8 +541,22 @@ int main() {
 	return 0;
 }
 
-// g++ -O3 main.cpp -o raytracer.exe
 // g++ -O3 -fopenmp main.cpp -o raytracer
 // git fetch upstream
 // git merge upstream/master
 // git push origin main
+
+/*
+image
+lab1: rendering
+lab1_basic: show the sphere
+lab1_mirror: with mirror effect
+
+lab2: antialiasing + depth of field (DoF)
+lab2_1: n_sample = 16, sigma = 0.5
+lab2_2: n_sample = 32, sigma = 0.5
+lab2_3: n_sample = 64, sigma = 0.5
+lab2_4: n_sample = 64, sigma = 0.1
+lab2_5: n_sample = 64, sigma = 3.0
+lab2_threeSphere: three sphere in the image
+*/
