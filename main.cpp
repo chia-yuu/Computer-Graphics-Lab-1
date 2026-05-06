@@ -639,7 +639,7 @@ int main() {
 			image[(i * W + j) * 3 + 2] = std::min(255., std::max(0., 255. * std::pow(color[2] / 255., 1. / scene.gamma)));
 		}
 	}
-	stbi_write_png("lab3.png", W, H, 3, &image[0], 0);
+	stbi_write_png("lab4.png", W, H, 3, &image[0], 0);
 	delete cat;
 
 	return 0;
