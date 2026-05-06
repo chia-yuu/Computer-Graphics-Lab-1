@@ -6,6 +6,9 @@
 #include <map>
 #include <string>
 #include <fstream>
+#include <algorithm>
+#include <chrono>
+#include <iostream>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -270,9 +273,168 @@ public:
 			}
 		}
 	}
+
+	// lab 4: with BVH
+	struct BVHNode{
+		Vector bound_mn, bound_mx;
+		int start, count;
+
+		BVHNode *left = nullptr;
+		BVHNode *right = nullptr;
+
+		bool is_leaf() const {
+			return left == nullptr && right == nullptr;
+		}
+	};
+
+	void compute_bounding_box(int start, int count, Vector& bound_mn, Vector& bound_mx){
+		bound_mn = Vector(1e30, 1e30, 1e30);
+		bound_mx = Vector(-1e30, -1e30, -1e30);
+
+		for(int i=0;i<count;i++){
+			const auto& idx = indices[start+i];
+			for(int j=0;j<3;j++){
+				const Vector& v = vertices[idx.vtx[j]];
+				for(int d=0;d<3;d++){
+					bound_mn[d] = std::min(bound_mn[d], v[d]);
+					bound_mx[d] = std::max(bound_mx[d], v[d]);
+				}
+			}
+		}
+	}
+
+	BVHNode* buildBVH(int start, int count){
+		BVHNode* node = new BVHNode();
+		node->start = start;
+		node->count = count;
+
+		compute_bounding_box(start, count, node->bound_mn, node->bound_mx);
+
+		if(count < 10){return node;}		// leaf
+
+		Vector bound_size = node->bound_mx - node->bound_mn;
+		int axis = 0;
+		if(bound_size[1] > bound_size[axis]){axis = 1;}
+		if(bound_size[2] > bound_size[axis]){axis = 2;}
+
+		int mid = start + count / 2;
+		std::nth_element(indices.begin() + start, indices.begin() + mid, indices.begin() + start + count, [&](const TriangleIndices& a, const TriangleIndices& b){
+			Vector ca(0, 0, 0), cb(0, 0, 0);
+			for(int i=0;i<3;i++){
+				ca = ca + vertices[a.vtx[i]];
+				cb = cb + vertices[b.vtx[i]];
+			}
+			ca = ca / 3.0;
+			cb = cb / 3.0;
+			return ca[axis] < cb[axis];
+		});
+
+		node->left = buildBVH(start, count/2);
+		node->right = buildBVH(mid, count - count/2);
+
+		return node;
+	}
+
+	bool intersectBVH(BVHNode* node, const Ray& ray, Vector& P, double& t, Vector& N) const{
+		// check if the ray intersect with the bounding box
+		double t_box_mn = -1e30, t_box_mx = 1e30;
+		for(int i=0;i<3;i++){
+			if(std::abs(ray.u[i]) < 1e-6){
+				if(ray.O[i] < node->bound_mn[i] || ray.O[i] > node->bound_mx[i]){return false;}
+			}
+			else{
+				double t0 = (node->bound_mn[i] - ray.O[i]) / ray.u[i];
+				double t1 = (node->bound_mx[i] - ray.O[i]) / ray.u[i];
+				if(t0 > t1) std::swap(t0, t1);
+
+				t_box_mn = std::max(t_box_mn, t0);
+				t_box_mx = std::min(t_box_mx, t1);
+
+				if(t_box_mn > t_box_mx) return false;
+			}
+		}
+
+		if(t_box_mn > t) return false;
+
+		bool is_intersect = false;
+		if(node->is_leaf()){
+			// reach leaf, find the intersection
+			// lab 3 Moller-Trumbore
+			Vector p_mn, n_mn;
+			double t_mn = 1e30;
+
+			for(int i=0; i<node->count; i++){
+				const auto& idx = indices[node->start + i];
+
+				Vector A = vertices[idx.vtx[0]];
+				Vector B = vertices[idx.vtx[1]];
+				Vector C = vertices[idx.vtx[2]];
+
+				Vector e1 = B - A;
+				Vector e2 = C - A;
+
+				Vector h = cross(ray.u, e2);
+				double det = dot(e1, h);
+				if(std::abs(det) < 1e-6){continue;}
+
+				Vector oa = ray.O - A;
+				double beta = dot(oa, h) / det;
+				if(beta < 0.0 || beta > 1.0){continue;}
+
+				Vector q = cross(oa, e1);
+				double gema = dot(ray.u, q) / det;
+				if(gema < 0.0 || beta+gema > 1.0){continue;}
+
+				double tt = dot(e2, q) / det;
+				if(tt < 1e-6 || tt >= t){continue;}
+
+				Vector pp = ray.O + tt * ray.u;
+				// Vector nn = cross(e1, e2);
+				// nn.normalize();
+
+				// Phong:  interpolation of normals
+				Vector nn;
+				if(idx.n[0] != -1 && idx.n[1] != -1 && idx.n[2] != -1){
+					double w = 1.0 - beta - gema;
+					nn = w * normals[idx.n[0]] + beta * normals[idx.n[1]] + gema * normals[idx.n[2]];
+				}
+				else{
+					nn = cross(e1, e2);
+				}
+				nn.normalize();
+
+				if(tt < t_mn){
+					is_intersect = true;
+					t_mn = tt;
+					p_mn = pp;
+					n_mn = nn;
+				}
+			}
+
+			if(is_intersect){
+				P = p_mn;
+				N = n_mn;
+				t = t_mn;
+			}
+
+			return is_intersect;
+		}
 	
+		bool intersect_left = intersectBVH(node->left, ray, P, t, N);
+		bool intersect_right = intersectBVH(node->right, ray, P, t, N);
+		return intersect_left || intersect_right;
+	}
+
+	BVHNode* root = nullptr;
+	bool intersect(const Ray& ray, Vector& P, double& t, Vector& N) const {
+		if(!root){return false;}
+		t = 1e30;
+		return intersectBVH(root, ray, P, t, N);
+	}
 
 	// TODO ray-mesh intersection (labs 3 and 4)
+	// lab 3: no BVH (only check the mesh bounding box and Moller-Trumbore algorithm)
+	/*
 	bool intersect(const Ray& ray, Vector& P, double& t, Vector& N) const {
 		// TODO (labs 3 and 4)
 		
@@ -299,8 +461,8 @@ public:
 		bool intersect_bx = true;
 		double mn = -1e30, mx = 1e30;
 		for(int i=0;i<3;i++){
-			if(std::abs(ray.u[0]) < 1e-6){
-				// ray parall to the plan
+			if(std::abs(ray.u[i]) < 1e-6){
+				// ray paralle to the plan
 				if(ray.O[i] < bound_mn[i] || ray.O[i] > bound_mx[i]){
 					intersect_bx = false;
 					break;
@@ -323,65 +485,54 @@ public:
 		if(!intersect_bx){return false;}
 
 
-		// Moller-Trumbore, iterate through all vertex index to check if the ray intersect with the traingle
-		bool intersect_tri = false;
-		Vector PP, NN;
+		// Moller-Trumbore
+		bool is_intersect = false;
+		Vector p_mn, n_mn;
 		double t_mn = 1e30;
 		for(auto idx : indices){
-			Vector P_i, N_i;
-			double t_i;
-
 			Vector A = vertices[idx.vtx[0]];
 			Vector B = vertices[idx.vtx[1]];
 			Vector C = vertices[idx.vtx[2]];
+
 			Vector e1 = B - A;
 			Vector e2 = C - A;
 
 			Vector h = cross(ray.u, e2);
-			double a = dot(e1, h);
-			if(std::abs(a) < 1e-6){continue;}
+			double det = dot(e1, h);
+			if(std::abs(det) < 1e-6){continue;}
 
-			double f = 1.0 / a;
-			Vector s = ray.O - A;
-			double u = f * dot(s, h);
-			if(u < 0.0 || u > 1.0){continue;}
+			Vector oa = ray.O - A;
+			double beta = dot(oa, h) / det;
+			if(beta < 0.0 || beta > 1.0){continue;}
 
-			Vector q = cross(s, e1);
-			double v = f * dot(ray.u, q);
-			if(v < 0.0 || u + v > 1.0){continue;}
+			Vector q = cross(oa, e1);
+			double gema = dot(ray.u, q) / det;
+			if(gema < 0.0 || beta+gema > 1.0){continue;}
 
-			t_i = f * dot(e2, q);
-			if(t_i < 1e-6){continue;}
+			double tt = dot(e2, q) / det;
+			if(tt < 1e-6){continue;}
 
-			P_i = ray.O + ray.u * t_i;
+			Vector pp = ray.O + tt * ray.u;
+			Vector nn = cross(e1, e2);
+			nn.normalize();
 
-			if(idx.n[0] != -1 && idx.n[1] != -1 && idx.n[2] != -1){
-				double w = 1.0 - u - v;
-				N_i = w * normals[idx.n[0]] + u * normals[idx.n[1]] + v * normals[idx.n[2]];
-			}
-			else{
-				N_i = cross(e1, e2);
-			}
-			N_i.normalize();
-
-			if(t_i < t_mn){
-				intersect_tri = true;
-				t_mn = t_i;
-				PP = P_i;
-				NN = N_i;
+			if(tt < t_mn){
+				is_intersect = true;
+				t_mn = tt;
+				p_mn = pp;
+				n_mn = nn;
 			}
 		}
 
-		if(intersect_tri){
-			P = PP;
-			N = NN;
-			N.normalize();
+		if(is_intersect){
+			P = p_mn;
+			N = n_mn;
 			t = t_mn;
 		}
 
-		return intersect_tri;
+		return is_intersect;
 	}
-
+	*/
 
 	std::vector<TriangleIndices> indices;
 	std::vector<Vector> vertices;
@@ -525,6 +676,8 @@ public:
 
 
 int main() {
+	auto start = std::chrono::high_resolution_clock::now();
+
 	int W = 512;
 	int H = 512;
 
@@ -560,6 +713,7 @@ int main() {
 	TriangleMesh* cat = new TriangleMesh(Vector(0.8, 0.8, 0.8), false, false);
 	cat->readOBJ("cadnav.com_model/Models_F0202A090/cat.obj");
 	cat->scale_translate(0.6, Vector(0, -10, 0));
+	cat->root = cat->buildBVH(0, cat->indices.size());
 	scene.addObject(cat);
 
 	// /*
@@ -642,6 +796,10 @@ int main() {
 	stbi_write_png("lab4.png", W, H, 3, &image[0], 0);
 	delete cat;
 
+	auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> duration = end - start;
+    std::cout << "Time: " << duration.count() << " seconds\n";
+
 	return 0;
 }
 
@@ -663,4 +821,11 @@ lab2_3: n_sample = 64, sigma = 0.5
 lab2_4: n_sample = 64, sigma = 0.1
 lab2_5: n_sample = 64, sigma = 3.0
 lab2_threeSphere: three sphere in the image
+
+lab 3 & 4 timing
+without BVH:
+Time: 97.4139 seconds
+with BVH:
+leaf 10 triangle, Time: 3.69494 seconds
+leaf 100 triangle, Time: 4.16789 seconds
 */
